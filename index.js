@@ -13,6 +13,7 @@ import 'dotenv/config';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import { parse as dotenvParse } from 'dotenv';
+import africastalking from 'africastalking';
 dotenv.config();
 try {
   const envPath = process.env.ENV_PATH || `${process.cwd()}/.env`;
@@ -170,6 +171,23 @@ function renderRoutesAndFares(routes) {
     .join('\n');
 }
 
+const AT_USERNAME = env('AT_USERNAME') || '';
+const AT_API_KEY = env('AT_API_KEY') || '';
+const AT_SENDER_ID = env('AT_SENDER_ID') || '';
+let atSMS = null;
+if (AT_USERNAME && AT_API_KEY) {
+  const atClient = africastalking({ apiKey: AT_API_KEY, username: AT_USERNAME });
+  atSMS = atClient.SMS;
+}
+async function sendSMS(to, message) {
+  if (!atSMS) return false;
+  try {
+    const result = await atSMS.send({ to: [to], message, from: AT_SENDER_ID || undefined });
+    return !!result;
+  } catch {
+    return false;
+  }
+}
 /**
  * Feature flows
  */
@@ -206,13 +224,21 @@ function handleBooking(selections, routes, sessionData) {
     sessionData.seats = seats;
     const r = sessionData.booking_route;
     const total = seats * parseInt(String(r.fare), 10);
+    const ref = 'TL-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const smsMessage =
+      `TransitLink: Booking confirmed!\n` +
+      `${r.origin} -> ${r.destination}\n` +
+      `Seats: ${seats}\n` +
+      `Total: ${total} KES\n` +
+      `Ref: ${ref}`;
     const msg =
       `Booking confirmed:\n` +
       `${r.origin} -> ${r.destination}\n` +
       `Seats: ${seats}\n` +
       `Total: ${total} KES\n` +
+      `Ref: ${ref}\n` +
       `Thank you for using TransitLink!`;
-    return [msg, true];
+    return [msg, true, { sms: smsMessage }];
   }
   return ['Unexpected step. Returning to main menu.', true];
 }
@@ -224,8 +250,12 @@ function handleReportCase(selections, sessionData) {
   }
   if (step === 2) {
     sessionData.report = selections[2] || '';
-    const ref = 'TL-' + Math.random().toString(36).slice(2, 8);
-    return [`Thanks. Your report has been received.\nRef: ${ref}`, true];
+    const ref = 'TL-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const smsMessage =
+      `TransitLink: Report received.\n` +
+      `Ref: ${ref}\n` +
+      `We will investigate and respond within 24 hours.`;
+    return [`Thanks. Your report has been received.\nRef: ${ref}`, true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -237,7 +267,13 @@ function handleLostFound(selections, sessionData) {
   }
   if (step === 2) {
     sessionData.lost_item = selections[2] || '';
-    return ['Thanks. We will contact you if a match is found.', true];
+    const ref = 'TL-LOST-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    const smsMessage =
+      `TransitLink: Lost item reported.\n` +
+      `Item: ${selections[2]}\n` +
+      `Ref: ${ref}\n` +
+      `We will contact you if found.`;
+    return ['Thanks. We will contact you if a match is found.', true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -257,7 +293,11 @@ function handleFeedback(selections, sessionData) {
   }
   if (step === 3) {
     sessionData.comment = selections[3] || '';
-    return ['Thanks for your feedback!', true];
+    const smsMessage =
+      `TransitLink: Thank you for your feedback!\n` +
+      `Rating: ${sessionData.rating}/5\n` +
+      `Your input helps us improve service.`;
+    return ['Thanks for your feedback!', true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -357,7 +397,7 @@ async function handleUssd(req, res) {
 
   if (feature === 'booking') {
     const routes = await RoutesRepo.byCompany(companyId);
-    const [resp, end] = handleBooking(selections, routes, data);
+    const [resp, end, extra] = handleBooking(selections, routes, data);
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
@@ -367,6 +407,9 @@ async function handleUssd(req, res) {
       data,
     });
     if (end) {
+      if (extra && extra.sms) {
+        await sendSMS(phoneNumber, extra.sms);
+      }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
     }
@@ -374,7 +417,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'report') {
-    const [resp, end] = handleReportCase(selections, data);
+    const [resp, end, extra] = handleReportCase(selections, data);
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
@@ -384,6 +427,9 @@ async function handleUssd(req, res) {
       data,
     });
     if (end) {
+      if (extra && extra.sms) {
+        await sendSMS(phoneNumber, extra.sms);
+      }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
     }
@@ -391,7 +437,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'lost_found') {
-    const [resp, end] = handleLostFound(selections, data);
+    const [resp, end, extra] = handleLostFound(selections, data);
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
@@ -401,6 +447,9 @@ async function handleUssd(req, res) {
       data,
     });
     if (end) {
+      if (extra && extra.sms) {
+        await sendSMS(phoneNumber, extra.sms);
+      }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
     }
@@ -408,7 +457,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'feedback') {
-    const [resp, end] = handleFeedback(selections, data);
+    const [resp, end, extra] = handleFeedback(selections, data);
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
@@ -418,6 +467,9 @@ async function handleUssd(req, res) {
       data,
     });
     if (end) {
+      if (extra && extra.sms) {
+        await sendSMS(phoneNumber, extra.sms);
+      }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
     }
