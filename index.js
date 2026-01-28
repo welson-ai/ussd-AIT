@@ -1,4 +1,4 @@
-/**
+ /**
  * TransitLink USSD Handler (Node.js/Express)
  *
  * Responsibilities:
@@ -14,6 +14,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import { parse as dotenvParse } from 'dotenv';
 import africastalking from 'africastalking';
+import https from 'https';
 dotenv.config();
 try {
   const envPath = process.env.ENV_PATH || `${process.cwd()}/.env`;
@@ -179,11 +180,63 @@ if (AT_USERNAME && AT_API_KEY) {
   const atClient = africastalking({ apiKey: AT_API_KEY, username: AT_USERNAME });
   atSMS = atClient.SMS;
 }
-async function sendSMS(to, message) {
-  if (!atSMS) return false;
+function postJson(url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const u = new URL(url);
+    const req = https.request(
+      {
+        hostname: u.hostname,
+        path: u.pathname,
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Content-Length': Buffer.byteLength(data),
+        },
+      },
+      (res) => {
+        let chunks = '';
+        res.on('data', (d) => {
+          chunks += d;
+        });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(chunks || '{}');
+            resolve({ status: res.statusCode, body: parsed });
+          } catch {
+            resolve({ status: res.statusCode, body: chunks });
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+function toArrayPhones(to) {
+  return Array.isArray(to) ? to : [to];
+}
+async function sendSMS(to, message, opts = {}) {
+  if (!AT_USERNAME || !AT_API_KEY) return false;
+  const payload = {
+    username: AT_USERNAME,
+    message,
+    phoneNumbers: toArrayPhones(to),
+  };
+  const sender = (opts.senderId ?? AT_SENDER_ID ?? '').trim();
+  if (sender) payload.senderId = sender;
+  if (opts.maskedNumber) payload.maskedNumber = opts.maskedNumber;
+  if (opts.telco) payload.telco = opts.telco;
   try {
-    const result = await atSMS.send({ to: [to], message, from: AT_SENDER_ID || undefined });
-    return !!result;
+    const { status } = await postJson(
+      'https://api.africastalking.com/version1/messaging/bulk',
+      { apiKey: AT_API_KEY },
+      payload
+    );
+    return status >= 200 && status < 300;
   } catch {
     return false;
   }
