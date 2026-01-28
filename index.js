@@ -232,12 +232,12 @@ function handleBooking(selections, routes, sessionData) {
       `Total: ${total} KES\n` +
       `Ref: ${ref}`;
     const msg =
-      `Booking confirmed:\n` +
+      `Booking confirmed!\n` +
       `${r.origin} -> ${r.destination}\n` +
       `Seats: ${seats}\n` +
       `Total: ${total} KES\n` +
       `Ref: ${ref}\n` +
-      `Thank you for using TransitLink!`;
+      `Check your SMS for details.`;
     return [msg, true, { sms: smsMessage }];
   }
   return ['Unexpected step. Returning to main menu.', true];
@@ -255,7 +255,7 @@ function handleReportCase(selections, sessionData) {
       `TransitLink: Report received.\n` +
       `Ref: ${ref}\n` +
       `We will investigate and respond within 24 hours.`;
-    return [`Thanks. Your report has been received.\nRef: ${ref}`, true, { sms: smsMessage }];
+    return [`Thanks! Report received.\nRef: ${ref}\nCheck your SMS for confirmation.`, true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -273,7 +273,7 @@ function handleLostFound(selections, sessionData) {
       `Item: ${selections[2]}\n` +
       `Ref: ${ref}\n` +
       `We will contact you if found.`;
-    return ['Thanks. We will contact you if a match is found.', true, { sms: smsMessage }];
+    return ['Thanks! We will contact you if found.\nCheck your SMS for reference.', true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -297,7 +297,7 @@ function handleFeedback(selections, sessionData) {
       `TransitLink: Thank you for your feedback!\n` +
       `Rating: ${sessionData.rating}/5\n` +
       `Your input helps us improve service.`;
-    return ['Thanks for your feedback!', true, { sms: smsMessage }];
+    return ['Thanks for your feedback!\nSMS confirmation sent.', true, { sms: smsMessage }];
   }
   return ['Unexpected step. Ending session.', true];
 }
@@ -408,7 +408,7 @@ async function handleUssd(req, res) {
     });
     if (end) {
       if (extra && extra.sms) {
-        await sendSMS(phoneNumber, extra.sms);
+        sendSMS(phoneNumber, extra.sms).catch(() => {});
       }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
@@ -428,7 +428,7 @@ async function handleUssd(req, res) {
     });
     if (end) {
       if (extra && extra.sms) {
-        await sendSMS(phoneNumber, extra.sms);
+        sendSMS(phoneNumber, extra.sms).catch(() => {});
       }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
@@ -448,7 +448,7 @@ async function handleUssd(req, res) {
     });
     if (end) {
       if (extra && extra.sms) {
-        await sendSMS(phoneNumber, extra.sms);
+        sendSMS(phoneNumber, extra.sms).catch(() => {});
       }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
@@ -468,7 +468,7 @@ async function handleUssd(req, res) {
     });
     if (end) {
       if (extra && extra.sms) {
-        await sendSMS(phoneNumber, extra.sms);
+        sendSMS(phoneNumber, extra.sms).catch(() => {});
       }
       await SessionsRepo.del(sessionId);
       return res.send(`END ${resp}`);
