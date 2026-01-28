@@ -1,4 +1,4 @@
- /**
+/**
  * TransitLink USSD Handler (Node.js/Express)
  *
  * Responsibilities:
@@ -13,7 +13,6 @@ import 'dotenv/config';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import { parse as dotenvParse } from 'dotenv';
-import africastalking from 'africastalking';
 import https from 'https';
 dotenv.config();
 try {
@@ -124,6 +123,55 @@ const RoutesRepo = {
   },
 };
 
+const BookingsRepo = {
+  async create({
+    phone_number,
+    company_id,
+    route_id,
+    origin,
+    destination,
+    seats,
+    seat_pref,
+    total,
+    ref,
+  }) {
+    const payload = {
+      phone_number,
+      company_id,
+      route_id,
+      origin,
+      destination,
+      seats,
+      seat_pref,
+      total,
+      ref,
+      created_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('bookings').insert(payload);
+    if (error) throw error;
+  },
+  async listByPhone(phone_number, limit = 5) {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('origin,destination,ref,created_at')
+      .eq('phone_number', phone_number)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data || [];
+  },
+};
+async function getSessionData(sessionId) {
+  const sessionRecord = await SessionsRepo.get(sessionId);
+  if (sessionRecord && sessionRecord.data) {
+    try {
+      return JSON.parse(sessionRecord.data);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
 /**
  * Helpers: USSD text normalization and menu rendering
  */
@@ -156,9 +204,10 @@ function renderCompanyMenu(company) {
     `${company.name}`,
     '1. Check Routes & Fares',
     '2. Book a Bus',
-    '3. Report a Case',
-    '4. Lost & Found',
-    '5. Give Feedback',
+    '3. My Bookings',
+    '4. Report a Case',
+    '5. Lost & Found',
+    '6. Give Feedback',
     '0. Back to Main Menu',
   ].join('\n');
 }
@@ -175,11 +224,6 @@ function renderRoutesAndFares(routes) {
 const AT_USERNAME = env('AT_USERNAME') || '';
 const AT_API_KEY = env('AT_API_KEY') || '';
 const AT_SENDER_ID = env('AT_SENDER_ID') || '';
-let atSMS = null;
-if (AT_USERNAME && AT_API_KEY) {
-  const atClient = africastalking({ apiKey: AT_API_KEY, username: AT_USERNAME });
-  atSMS = atClient.SMS;
-}
 function postJson(url, headers, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
@@ -275,26 +319,41 @@ function handleBooking(selections, routes, sessionData) {
       return ['Invalid seats. Enter a positive number:\n0. Back', false];
     }
     sessionData.seats = seats;
+    return [
+      ['Seat preference:', '1. Window seats', '2. Aisle seats', '3. Front of bus', '4. Back of bus', '5. No preference', '0. Back'].join('\n'),
+      false,
+    ];
+  }
+  if (step === 4) {
+    const prefIdx = parseInt(selections[4] || '5', 10);
+    const prefs = ['Window seats', 'Aisle seats', 'Front of bus', 'Back of bus', 'No preference'];
+    const seatPref = prefs[(prefIdx >= 1 && prefIdx <= 5) ? prefIdx - 1 : 4];
+    sessionData.seat_pref = seatPref;
     const r = sessionData.booking_route;
+    const seats = sessionData.seats || 1;
     const total = seats * parseInt(String(r.fare), 10);
     const ref = 'TL-' + Math.random().toString(36).slice(2, 8).toUpperCase();
     const smsMessage =
       `TransitLink: Booking confirmed!\n` +
       `${r.origin} -> ${r.destination}\n` +
       `Seats: ${seats}\n` +
+      `Seat Pref: ${seatPref}\n` +
       `Total: ${total} KES\n` +
       `Ref: ${ref}`;
     const msg =
       `Booking confirmed!\n` +
       `${r.origin} -> ${r.destination}\n` +
       `Seats: ${seats}\n` +
+      `Seat Pref: ${seatPref}\n` +
       `Total: ${total} KES\n` +
       `Ref: ${ref}\n` +
       `Check your SMS for details.`;
+    sessionData.booking_ref = ref;
+    sessionData.booking_total = total;
     return [msg, true, { sms: smsMessage }];
   }
-  return ['Unexpected step. Returning to main menu.', true];
 }
+
 
 function handleReportCase(selections, sessionData) {
   const step = selections.length - 1;
@@ -414,9 +473,10 @@ async function handleUssd(req, res) {
   const featureMap = {
     1: 'routes',
     2: 'booking',
-    3: 'report',
-    4: 'lost_found',
-    5: 'feedback',
+    3: 'my_bookings',
+    4: 'report',
+    5: 'lost_found',
+    6: 'feedback',
   };
   const feature = featureMap[featureIdx] || null;
   if (!feature) {
@@ -431,11 +491,10 @@ async function handleUssd(req, res) {
     return res.send(`CON Invalid selection. Try again.\n${renderCompanyMenu(company)}`);
   }
 
-  const data = {};
-
   if (feature === 'routes') {
     const routes = await RoutesRepo.byCompany(companyId);
     const resp = renderRoutesAndFares(routes);
+    const data = {};
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
@@ -448,18 +507,65 @@ async function handleUssd(req, res) {
     return res.send(`END ${resp}`);
   }
 
+  if (feature === 'my_bookings') {
+    const items = await BookingsRepo.listByPhone(phoneNumber);
+    let out = '';
+    if (!items || items.length === 0) {
+      out = 'No bookings found.';
+    } else {
+      let i = 1;
+      for (const b of items) {
+        const dt = new Date(b.created_at);
+        const ts = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+        out += `${i}. ${b.origin}-${b.destination} (${ts}) - Ref: ${b.ref}\n`;
+        i++;
+      }
+      out = out.trimEnd();
+    }
+    await SessionsRepo.upsert({
+      sessionId,
+      phoneNumber,
+      level: 2,
+      companyId,
+      feature,
+      data: {},
+    });
+    await SessionsRepo.del(sessionId);
+    return res.send(`END ${out}`);
+  }
   if (feature === 'booking') {
     const routes = await RoutesRepo.byCompany(companyId);
+    const data = await getSessionData(sessionId);
     const [resp, end, extra] = handleBooking(selections, routes, data);
     await SessionsRepo.upsert({
       sessionId,
       phoneNumber,
-      level: end ? 4 : level,
+      level: end ? 5 : level,
       companyId,
       feature,
       data,
     });
     if (end) {
+      const r = data.booking_route;
+      const seats = data.seats || 1;
+      const seat_pref = data.seat_pref || 'No preference';
+      const total = data.booking_total || (r ? seats * parseInt(String(r.fare), 10) : null);
+      const ref = data.booking_ref || null;
+      if (r && ref && total != null) {
+        try {
+          await BookingsRepo.create({
+            phone_number: phoneNumber,
+            company_id: companyId,
+            route_id: r.id,
+            origin: r.origin,
+            destination: r.destination,
+            seats,
+            seat_pref,
+            total,
+            ref,
+          });
+        } catch {}
+      }
       if (extra && extra.sms) {
         sendSMS(phoneNumber, extra.sms).catch(() => {});
       }
@@ -470,6 +576,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'report') {
+    const data = await getSessionData(sessionId);
     const [resp, end, extra] = handleReportCase(selections, data);
     await SessionsRepo.upsert({
       sessionId,
@@ -490,6 +597,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'lost_found') {
+    const data = await getSessionData(sessionId);
     const [resp, end, extra] = handleLostFound(selections, data);
     await SessionsRepo.upsert({
       sessionId,
@@ -510,6 +618,7 @@ async function handleUssd(req, res) {
   }
 
   if (feature === 'feedback') {
+    const data = await getSessionData(sessionId);
     const [resp, end, extra] = handleFeedback(selections, data);
     await SessionsRepo.upsert({
       sessionId,
@@ -535,7 +644,7 @@ async function handleUssd(req, res) {
     level,
     companyId,
     feature,
-    data,
+    data: {},
   });
   return res.send('END Unexpected selection. Please try again later.');
 }
